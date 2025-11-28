@@ -11,7 +11,7 @@ from __future__ import annotations
 import weakref
 import logging
 import random
-import enum
+from enum import IntEnum
 from typing import TYPE_CHECKING, override
 
 import bascenev1 as bs
@@ -174,7 +174,7 @@ class Icon(bs.Actor):
         return super().handlemessage(msg)
 
 
-class BombType(enum.Enum):
+class BombType(IntEnum):
     DEFAULT = 0
     NORMAL = 1
     STICKY = 2
@@ -217,7 +217,7 @@ class EliminationGame(bs.TeamGameActivity[Player, Team]):
     """Game type where last player(s) left alive win."""
 
     name = 'Gosquad Elimination'
-    description = 'Elimination game big bombs meteor shower.'
+    description = 'Elimination game with very big bombs meteor shower.'
     scoreconfig = bs.ScoreConfig(
         label='Survived', scoretype=bs.ScoreType.SECONDS, none_is_winner=True
     )
@@ -277,7 +277,7 @@ class EliminationGame(bs.TeamGameActivity[Player, Team]):
                     ('1 Minutes', 60),
                     ('1.5 Minutes', 90),
                     ('2 Minutes', 120),
-
+                    ('3 Minutes', 180),
                 ],
                 default=0,
             ),
@@ -306,6 +306,25 @@ class EliminationGame(bs.TeamGameActivity[Player, Team]):
                 default=0,
             ),
             bs.BoolSetting('Revive Eliminated Players', default=True),
+            bs.IntChoiceSetting(
+                'Revival Delay (Not Epic Time)',
+                choices=[
+                    ('0.5 Minute', 30),
+                    ('1 Minute', 60),
+                    ('2 Minutes', 120),
+                    ('3 Minutes', 180),
+                    ('4 Minutes', 240),
+                    ('5 Minutes', 300),
+                ],
+                default=120,
+            ),
+            bs.IntSetting(
+                'Revival Count',
+                default=2,
+                min_value=1,
+                max_value=6,
+                increment=1,
+            ),
         ]
         if issubclass(sessiontype, bs.DualTeamSession):
             settings.append(bs.BoolSetting('Solo Mode', default=False))
@@ -351,9 +370,12 @@ class EliminationGame(bs.TeamGameActivity[Player, Team]):
         self._bomb_type = str(bomb_type_raw.as_str)
         self._revive_eliminated = bool(settings.get('Revive Eliminated Players', True))
         self._revive_eliminated_timer: bs.Timer | None = None
+        self._revival_time = int(settings['Revival Delay (Not Epic Time)'])
+        self._revival_count = int(settings['Revival Count'])
 
         self._bomb_time = 3.0
         self._bomb_scale = 0.1
+        self.bomb_pos: bs.Vec3 | None = None
 
         # Base class overrides:
         self.slow_motion = self._epic_mode
@@ -570,12 +592,37 @@ class EliminationGame(bs.TeamGameActivity[Player, Team]):
                 return points[-1][1]
         return None
 
+    def _bomb_drop_points(self) -> bs.Vec3:
+        # I took this specific calculation from a work of byAngel.
+        # Credit goes to him.
+        if self.map.getname() == 'Hockey Stadium':
+            return (random.randrange(-11, 12), 6, random.randrange(-4, 5))
+        elif self.map.getname() == 'Football Stadium':
+            return (random.randrange(-10, 11), 6, random.randrange(-5, 6))
+        elif self.map.getname() == 'The Pad':
+            return (random.randrange(-3, 4), 10, random.randrange(-8, 4))
+        elif self.map.getname() == 'Doom Shroom':
+            return (random.randrange(-7, 8), 8, random.randrange(-7, 1))
+        elif self.map.getname() == 'Lake Frigid':
+            return (random.randrange(-7, 8), 8, random.randrange(-7, 3))
+        elif self.map.getname() == 'Tower D':
+            return (random.randrange(-7, 8), 8, random.randrange(-5, 5))
+        elif self.map.getname() == 'Step Right Up':
+            return (random.randrange(-7, 8), 10, random.randrange(-8, 3))
+        elif self.map.getname() == 'Courtyard':
+            return (random.randrange(-7, 8), 10, random.randrange(-6, 4))
+        elif self.map.getname() == 'Rampage':
+            return (random.randrange(-7, 8), 11, random.randrange(-5, -2))
+        else:
+            return (random.randrange(-7, 8), 6, random.randrange(-5, 6))
+
     def _initiate_bomb(self) -> None:
         delay = 1.0
         bs.timer(delay, self._decrement_bomb_time, repeat=True)
         bs.timer(delay, self._increment_bomb_scale, repeat=True)
 
         # Kick off the first wave in a few seconds.
+        self.bomb_pos = self._bomb_drop_points()
         self._set_bomb_timer()
 
     def _set_bomb_timer(self) -> None:
@@ -591,33 +638,10 @@ class EliminationGame(bs.TeamGameActivity[Player, Team]):
         # Drop a single bomb.
         # Drop them somewhere within our bounds with velocity pointing
         # toward the opposite side.
-        # I took this specific calculation from a work of byAngel.
-        # Credit goes to him.
-        if self.map.getname() == 'Hockey Stadium':
-            pos = (random.randrange(-11, 12), 6, random.randrange(-4, 5))
-        elif self.map.getname() == 'Football Stadium':
-            pos = (random.randrange(-10, 11), 6, random.randrange(-5, 6))
-        elif self.map.getname() == 'The Pad':
-            pos = (random.randrange(-3, 4), 10, random.randrange(-8, 4))
-        elif self.map.getname() == 'Doom Shroom':
-            pos = (random.randrange(-7, 8), 8, random.randrange(-7, 1))
-        elif self.map.getname() == 'Lake Frigid':
-            pos = (random.randrange(-7, 8), 8, random.randrange(-7, 3))
-        elif self.map.getname() == 'Tower D':
-            pos = (random.randrange(-7, 8), 8, random.randrange(-5, 5))
-        elif self.map.getname() == 'Step Right Up':
-            pos = (random.randrange(-7, 8), 10, random.randrange(-8, 3))
-        elif self.map.getname() == 'Courtyard':
-            pos = (random.randrange(-7, 8), 10, random.randrange(-6, 4))
-        elif self.map.getname() == 'Rampage':
-            pos = (random.randrange(-7, 8), 11, random.randrange(-5, -2))
-        else:
-            pos = (random.randrange(-7, 8), 6, random.randrange(-5, 6))
-
-        dropdir = (-1.0 if pos[0] > 0 else 1.0)
+        dropdir = (-1.0 if self.bomb_pos[0] > 0 else 1.0)
         vel = ((-5.0 + random.random() * 30.0) * dropdir, -4.0, 0)
 
-        self._drop_bomb(pos, vel)
+        self._drop_bomb(self.bomb_pos, vel)
         self._set_bomb_timer()
 
     def _drop_bomb(
@@ -645,10 +669,10 @@ class EliminationGame(bs.TeamGameActivity[Player, Team]):
             bs.timer(1.2, bomb.arm)
 
     def _decrement_bomb_time(self) -> None:
-        self._bomb_time = max(2.0, self._bomb_time * 0.8)
+        self._bomb_time = max(1.5, self._bomb_time * 0.95)
 
     def _increment_bomb_scale(self) -> None:
-        self._bomb_scale = min(8.0, self._bomb_scale * 1.2)
+        self._bomb_scale = min(8.0, self._bomb_scale * 1.1)
 
     @override
     def spawn_player(self, player: Player) -> bs.Actor:
@@ -779,19 +803,18 @@ class EliminationGame(bs.TeamGameActivity[Player, Team]):
         if len(self._get_living_teams()) < 2:
             self._round_end_timer = bs.Timer(0.5, self.end_game)
 
-        # Start the 120s timer when only 2 players remain.
-        if (
+        # Start the eliminated-revival timer when only 2 players remain.
+        elif (
             len(self._get_living_players()) == 2 and
             self._revive_eliminated and
             len(self.players) >= 4
         ):
             self._revive_eliminated = False
             bs.broadcastmessage(
-                "Be ready! ⚔️ 2 random eliminated players may rejoin the game in 2 minutes.",
+                f"Be ready! ⚔️ {self._revival_count} random eliminated players may rejoin in {int(self._revival_time/60)} minute(s) to finish the game.",
                 color=(1, 0.7, 0.1)
             )
-            self._revive_eliminated_timer = bs.BaseTimer(
-                120, bs.WeakCallStrict(self._revive_random_players))
+            self._revive_eliminated_timer = bs.BaseTimer(self._revival_time, bs.WeakCallStrict(self._revive_random_players))
 
     def _get_living_teams(self) -> list[Team]:
         return [
@@ -817,7 +840,7 @@ class EliminationGame(bs.TeamGameActivity[Player, Team]):
             return
 
         # Pick up to 2 random eliminated players
-        revived = random.sample(eliminated_players, min(2, len(eliminated_players)))
+        revived = random.sample(eliminated_players, min(self._revival_count, len(eliminated_players)))
         for player in revived:
             player.lives = 1
             if not self._solo_mode:
