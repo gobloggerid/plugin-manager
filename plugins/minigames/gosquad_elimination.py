@@ -18,6 +18,7 @@ import bascenev1 as bs
 
 from bascenev1lib.actor.spazfactory import SpazFactory
 from bascenev1lib.actor.scoreboard import Scoreboard
+from bascenev1lib.gameutils import SharedObjects
 from bascenev1lib.actor.bomb import Bomb
 
 if TYPE_CHECKING:
@@ -319,7 +320,7 @@ class EliminationGame(bs.TeamGameActivity[Player, Team]):
                 default=120,
             ),
             bs.IntSetting(
-                'Revival Count',
+                'Revival Player-Count',
                 default=2,
                 min_value=1,
                 max_value=6,
@@ -371,11 +372,10 @@ class EliminationGame(bs.TeamGameActivity[Player, Team]):
         self._revive_eliminated = bool(settings.get('Revive Eliminated Players', True))
         self._revive_eliminated_timer: bs.Timer | None = None
         self._revival_time = int(settings['Revival Delay (Not Epic Time)'])
-        self._revival_count = int(settings['Revival Count'])
+        self._revival_count = int(settings['Revival Player-Count'])
 
         self._bomb_time = 3.0
         self._bomb_scale = 0.1
-        self.bomb_pos: bs.Vec3 | None = None
 
         # Base class overrides:
         self.slow_motion = self._epic_mode
@@ -418,6 +418,18 @@ class EliminationGame(bs.TeamGameActivity[Player, Team]):
         # Don't waste time doing this until begin.
         if self.has_begun():
             self._update_icons()
+
+    @override
+    def on_transition_in(self) -> None:
+        # (Pylint bug?) pylint: disable=missing-function-docstring
+
+        super().on_transition_in()
+        shared = SharedObjects.get()
+        if self._equip_speed and (
+            self.map.getname() in ('Hockey Stadium', 'Lake Frigid')
+        ):
+            self.map.node.materials = [shared.footing_material]
+            self.map.floor.materials = [shared.footing_material]
 
     @override
     def on_begin(self) -> None:
@@ -467,6 +479,7 @@ class EliminationGame(bs.TeamGameActivity[Player, Team]):
                 lesser_team.players[add_index].lives += 1
                 add_index = (add_index + 1) % len(lesser_team.players)
 
+        self.bounds = list(self.map.get_def_bound_box("area_of_interest_bounds"))
         self._update_icons()
         if self._meteor_shower:
             bs.timer(self._meteor_start_time, self._initiate_bomb)
@@ -592,37 +605,12 @@ class EliminationGame(bs.TeamGameActivity[Player, Team]):
                 return points[-1][1]
         return None
 
-    def _bomb_drop_points(self) -> bs.Vec3:
-        # I took this specific calculation from a work of byAngel.
-        # Credit goes to him.
-        if self.map.getname() == 'Hockey Stadium':
-            return (random.randrange(-11, 12), 6, random.randrange(-4, 5))
-        elif self.map.getname() == 'Football Stadium':
-            return (random.randrange(-10, 11), 6, random.randrange(-5, 6))
-        elif self.map.getname() == 'The Pad':
-            return (random.randrange(-3, 4), 10, random.randrange(-8, 4))
-        elif self.map.getname() == 'Doom Shroom':
-            return (random.randrange(-7, 8), 8, random.randrange(-7, 1))
-        elif self.map.getname() == 'Lake Frigid':
-            return (random.randrange(-7, 8), 8, random.randrange(-7, 3))
-        elif self.map.getname() == 'Tower D':
-            return (random.randrange(-7, 8), 8, random.randrange(-5, 5))
-        elif self.map.getname() == 'Step Right Up':
-            return (random.randrange(-7, 8), 10, random.randrange(-8, 3))
-        elif self.map.getname() == 'Courtyard':
-            return (random.randrange(-7, 8), 10, random.randrange(-6, 4))
-        elif self.map.getname() == 'Rampage':
-            return (random.randrange(-7, 8), 11, random.randrange(-5, -2))
-        else:
-            return (random.randrange(-7, 8), 6, random.randrange(-5, 6))
-
     def _initiate_bomb(self) -> None:
         delay = 1.0
         bs.timer(delay, self._decrement_bomb_time, repeat=True)
         bs.timer(delay, self._increment_bomb_scale, repeat=True)
 
         # Kick off the first wave in a few seconds.
-        self.bomb_pos = self._bomb_drop_points()
         self._set_bomb_timer()
 
     def _set_bomb_timer(self) -> None:
@@ -633,15 +621,55 @@ class EliminationGame(bs.TeamGameActivity[Player, Team]):
         # and debug things.
         loc_test = False
         if loc_test:
-            bs.newnode('locator', attrs={'position': (0.0, 20.0, -20.0)})
+            bs.newnode('locator', attrs={'position': (8, 6, -5.5)})
+            bs.newnode('locator', attrs={'position': (8, 6, -2.3)})
+            bs.newnode('locator', attrs={'position': (-7.3, 6, -5.5)})
+            bs.newnode('locator', attrs={'position': (-7.3, 6, -2.3)})
 
         # Drop a single bomb.
         # Drop them somewhere within our bounds with velocity pointing
         # toward the opposite side.
-        dropdir = (-1.0 if self.bomb_pos[0] > 0 else 1.0)
-        vel = ((-5.0 + random.random() * 30.0) * dropdir, -4.0, 0)
+        vel = None
+        random_pos = False
+        map_name = self.map.getname()
+        if map_name == 'Rampage':
+            pos = (random.randrange(-7, 8), 11, random.randrange(-5, -2))
+        elif map_name == 'Hockey Stadium':
+            pos = (random.randrange(-11, 12), 6, random.randrange(-4, 5))
+        else:
+            random_pos = True
+            pos = (
+                random.uniform(self.bounds[0], self.bounds[3]),
+                self.bounds[4],
+                random.uniform(self.bounds[2], self.bounds[5]),
+            )
+            dropdirx = -1 if pos[0] > 0 else 1
+            dropdirz = -1 if pos[2] > 0 else 1
+            forcex = (
+                self.bounds[0] - self.bounds[3]
+                if self.bounds[0] - self.bounds[3] > 0
+                else -(self.bounds[0] - self.bounds[3])
+            )
+            forcez = (
+                self.bounds[2] - self.bounds[5]
+                if self.bounds[2] - self.bounds[5] > 0
+                else -(self.bounds[2] - self.bounds[5])
+            )
+            vel = (
+                (-5 + random.random() * forcex) * dropdirx,
+                random.uniform(-3.066, -4.12),
+                (-5 + random.random() * forcez) * dropdirz,
+            )
 
-        self._drop_bomb(self.bomb_pos, vel)
+        if not random_pos:
+            dropdir = -1.0 if pos[0] > 0 else 1.0
+            vel = (
+                (-5.0 + random.random() * 30.0) * dropdir,
+                random.uniform(-3.066, -4.12),
+                0,
+            )
+
+        self._drop_bomb(pos, vel)
         self._set_bomb_timer()
 
     def _drop_bomb(
